@@ -47,6 +47,9 @@ class Fluent::CloudwatchInput < Fluent::Input
           :value => values.next,
         })
       end
+    else if @dimensions_name
+      @names = @dimensions_name.split(",").each
+      @search_dimensions = true
     else
       @dimensions.push({
         :name => @dimensions_name,
@@ -80,6 +83,33 @@ class Fluent::CloudwatchInput < Fluent::Input
   end
 
   private
+
+  def get_dimensions(namespace, metric_name, dimension_name)
+    dimensions = Array.new()
+    response = nil
+    loop do
+      unless response != nil && response.has_key?(:next_token)
+        response = @cw.list_metrics(
+          :namespace      => namespace,
+          :metric_name    => metric_name
+        )
+      else
+        response = @cw.list_metrics(
+          :namespace      => namespace,
+          :metric_name    => metric_name,
+          :next_token     => response[:next_token]
+        )
+      end
+      response[:metrics].each{|metric|
+        dim = metric.fetch(:dimensions).pop
+        if dim.fetch(:name) == dimension_name
+          dimensions.push(dim.fetch(:value))
+        end
+      }
+      break unless response.has_key?(:next_token)
+    end
+    return dimensions
+  end
 
   # if watcher thread was not update timestamp in recent @interval * 2 sec., restarting it.
   def monitor
@@ -130,6 +160,17 @@ class Fluent::CloudwatchInput < Fluent::Input
 
   def output
     @metric_name.split(",").each {|m|
+      if @search_dimensions
+        @dimension_names.split(",").each {|name|
+          get_dimensions(@namespace, m, name).each {|dimension|
+            @dimensions.push({
+              :name => name,
+              :value => dimension
+            })
+          }
+        }
+      end
+
       statistics = @cw.get_metric_statistics({
         :namespace   => @namespace,
         :metric_name => m,
@@ -155,4 +196,6 @@ class Fluent::CloudwatchInput < Fluent::Input
       end
     }
   end
+
+
 end
