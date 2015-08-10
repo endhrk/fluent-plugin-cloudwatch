@@ -47,7 +47,7 @@ class Fluent::CloudwatchInput < Fluent::Input
           :value => values.next,
         })
       end
-    else if @dimensions_name
+    elsif @dimensions_name
       @names = @dimensions_name.split(",").each
       @search_dimensions = true
     else
