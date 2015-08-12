@@ -38,7 +38,7 @@ class Fluent::CloudwatchInput < Fluent::Input
     super
 
     @dimensions = []
-    if @dimensions_name && @dimensions_value
+    if @dimensions_name && @dimensions_value && @dimensions_value != ''
       names = @dimensions_name.split(",").each
       values = @dimensions_value.split(",").each
       loop do
@@ -47,8 +47,7 @@ class Fluent::CloudwatchInput < Fluent::Input
           :value => values.next,
         })
       end
-    elsif @dimensions_name
-      @names = @dimensions_name.split(",").each
+    elsif @dimensions_name && (! @dimensions_value || @dimensions_value == '')
       @search_dimensions = true
     else
       @dimensions.push({
@@ -103,11 +102,15 @@ class Fluent::CloudwatchInput < Fluent::Input
       response[:metrics].each{|metric|
         dim = metric.fetch(:dimensions).pop
         if dim.fetch(:name) == dimension_name
-          dimensions.push(dim.fetch(:value))
+          dimensions.push({
+            :name => dimension_name,
+            :value => dim.fetch(:value)
+          })
         end
       }
       break unless response.has_key?(:next_token)
     end
+
     return dimensions
   end
 
@@ -161,39 +164,41 @@ class Fluent::CloudwatchInput < Fluent::Input
   def output
     @metric_name.split(",").each {|m|
       if @search_dimensions
-        @dimension_names.split(",").each {|name|
-          get_dimensions(@namespace, m, name).each {|dimension|
-            @dimensions.push({
-              :name => name,
-              :value => dimension
-            })
-          }
+        @dimensions_name.split(",").each {|name|
+          @dimensions = get_dimensions(@namespace, m, name)
         }
       end
 
-      statistics = @cw.get_metric_statistics({
-        :namespace   => @namespace,
-        :metric_name => m,
-        :statistics  => [@statistics],
-        :dimensions  => @dimensions,
-        :start_time  => (Time.now - @period*10).iso8601,
-        :end_time    => Time.now.iso8601,
-        :period      => @period,
-      })
-      unless statistics[:datapoints].empty?
-        stat = @statistics.downcase.to_sym
-        datapoint = statistics[:datapoints].sort_by{|h| h[:timestamp]}.last
-        data = datapoint[stat]
+      log.debug "cloudwatch: making dimensions has done. metric_name => #{m}, search_dimensions => #{@search_dimensions}, size => #{@dimensions.size}"
+      @dimensions.each {|dimension|
+        begin
+          statistics = @cw.get_metric_statistics({
+            :namespace   => @namespace,
+            :metric_name => m,
+            :statistics  => [@statistics],
+            :dimensions  => [dimension],
+            :start_time  => (Time.now - @period*10).iso8601,
+            :end_time    => Time.now.iso8601,
+            :period      => @period,
+          })
+        rescue => ex
+          log.debug ex.message
+        end
+        unless statistics[:datapoints].empty?
+          stat = @statistics.downcase.to_sym
+          datapoint = statistics[:datapoints].sort_by{|h| h[:timestamp]}.last
+          data = datapoint[stat]
 
-        # unix time
-        catch_time = datapoint[:timestamp].to_i
+          # unix time
+          catch_time = datapoint[:timestamp].to_i
 
-        # no output_data.to_json
-        output_data = {m => data}
-        router.emit(tag, catch_time, output_data)
-      else
-        log.warn "cloudwatch: #{@namespace} #{@dimensions_name} #{@dimensions_value} #{m} datapoints is empty"
-      end
+          # no output_data.to_json
+          output_data = {dimension[:name] => dimension[:value] ,m => data}
+          router.emit(tag, catch_time, output_data)
+        else
+          log.warn "cloudwatch: #{@namespace} #{@dimensions_name} #{@dimensions_value} #{m} datapoints is empty"
+        end
+      }
     }
   end
 
